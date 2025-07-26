@@ -1,0 +1,25 @@
+services:
+  chromadb:
+    image: chromadb/chroma
+    ports:
+      - "9000:8000"
+    environment:
+      - IS_PERSISTENT=TRUE
+      - PERSIST_DIRECTORY=/chroma/chroma  # default data path in container
+      - ANONYMIZED_TELEMETRY=TRUE
+    volumes:
+      - ./chromadb_data:/chroma/chroma   # map local folder to container data path
+    restart: unless-stopped
+  
+  ollama:
+    image: ollama/ollama
+    ports:
+      - "11434:11434"
+    restart: unless-stopped
+    environment:
+      - OLLAMA_MODEL=gemma3-1b
+      - OLLAMA_PORT=11434
+    volumes:
+      - ./data:/root/.ollama
+      - ./ollama_entrypoint.sh:/entrypoint.sh
+    entrypoint: ["/bin/bash", "/entrypoint.sh"]
