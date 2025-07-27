@@ -1,5 +1,5 @@
 import streamlit as st
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Protocol
 import requests
 from requests.adapters import HTTPAdapter
 from requests.packages.urllib3.util.retry import Retry
@@ -7,10 +7,14 @@ import logging
 from datetime import datetime
 import time
 
-from .config import Settings
-from .models import QueryResponse, DocumentMetadata, HealthResponse
-
 logger = logging.getLogger(__name__)
+
+class Settings(Protocol):
+    """Settings protocol for type hints."""
+    backend_host: str
+    max_retries: int
+    retry_delay: float
+    connection_timeout: float
 
 class APIClient:
     """Handle all API communication with retry and error handling."""

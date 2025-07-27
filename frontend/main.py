@@ -1,10 +1,10 @@
 import streamlit as st
 import logging
+import os
 from datetime import datetime
 from functools import lru_cache
 from typing import Optional, List, Any, Dict
-from pydantic import Field
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from dataclasses import dataclass
 
 from api_client import APIClient
 from models import DocumentMetadata, ChatMessage
@@ -18,25 +18,30 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Application Settings
-class Settings(BaseSettings):
+@dataclass
+class Settings:
     """Frontend application settings."""
-    backend_host: str = Field("http://backend:8001")
-    max_retries: int = Field(3)
-    retry_delay: float = Field(1.0)
-    chat_history_limit: int = Field(50)
-    connection_timeout: float = Field(10.0)
-    
-    model_config = SettingsConfigDict(
-        env_prefix="RAG_",
-        case_sensitive=False,
-        env_file=".env",
-        env_file_encoding="utf-8"
-    )
+    backend_host: str = "http://backend:8001"
+    max_retries: int = 3
+    retry_delay: float = 1.0
+    chat_history_limit: int = 50
+    connection_timeout: float = 10.0
+
+    @classmethod
+    def from_env(cls) -> 'Settings':
+        """Create settings from environment variables."""
+        return cls(
+            backend_host=os.getenv("RAG_BACKEND_HOST", cls.backend_host),
+            max_retries=int(os.getenv("RAG_MAX_RETRIES", cls.max_retries)),
+            retry_delay=float(os.getenv("RAG_RETRY_DELAY", cls.retry_delay)),
+            chat_history_limit=int(os.getenv("RAG_CHAT_HISTORY_LIMIT", cls.chat_history_limit)),
+            connection_timeout=float(os.getenv("RAG_CONNECTION_TIMEOUT", cls.connection_timeout))
+        )
 
 @lru_cache()
 def get_settings() -> Settings:
     """Get cached settings."""
-    return Settings()
+    return Settings.from_env()
 
 
 

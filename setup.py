@@ -10,8 +10,6 @@ setup(
         "streamlit>=1.31.0",
         "requests>=2.31.0",
         "python-dotenv>=1.0.0",
-        "pydantic>=2.6.0",
-        "pydantic-settings>=2.1.0",
         
         # Backend dependencies
         "fastapi>=0.109.0",
