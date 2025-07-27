@@ -64,41 +64,25 @@ rag/
 │   ├── app.py          # Main application
 │   └── Dockerfile
 ├── frontend/           # Streamlit frontend
-│   ├── main.py        # UI application
-│   ├── ingest.py      # Document processing
+│   ├── streamlit_app.py # UI application
 │   └── Dockerfile
 ├── tests/             # Test suite
-│   ├── unit/         # Unit tests
-│   ├── integration/  # Integration tests
-│   └── performance/  # Load tests
 └── docker-compose.yml
 ```
 
 ## 🧪 Testing
 
-The project includes comprehensive test coverage:
+The project does not come with a comprehensive test coverage:
 
 ```bash
 # Install test dependencies
 make install-test
 
-# Run all tests
-make test-all
-
 # Run specific test suites
 make test-unit
-make test-integration
-make test-performance
 
-# Run tests in Docker
-make test-docker-all
 ```
 
-### Test Coverage
-- Unit tests for all components
-- Integration tests for system flows
-- Performance testing with Locust
-- Property-based testing with Hypothesis
 
 ## 🔧 Development
 
@@ -111,15 +95,6 @@ pip install -r tests/requirements-test.txt
 
 # Start services in development mode
 make up
-```
-
-2. Run tests during development:
-```bash
-# Watch mode for tests
-make watch-tests
-
-# Generate coverage report
-make coverage-report
 ```
 
 ## 🔍 API Documentation
@@ -176,7 +151,7 @@ make coverage-report
 - Connection pooling and caching
 
 ### Limitations
-- Maximum file size: 10MB
+- Maximum file size: 50MB
 - Concurrent uploads: 5
 - Rate limit: 10 requests/minute
 - Maximum query length: 1000 characters
@@ -199,28 +174,13 @@ CHAT_HISTORY_LIMIT=50
 ### Docker Configuration
 See `docker-compose.yml` for service configuration and networking.
 
-## 🤝 Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Commit your changes
-4. Push to the branch
-5. Create a Pull Request
-
-### Development Guidelines
-- Follow PEP 8 style guide
-- Add tests for new features
-- Update documentation
-- Use type hints
-- Include docstrings
-
-## 📝 License
-
-[License Information]
-
 ## 🙏 Acknowledgments
 
 - LlamaIndex for document processing
 - ChromaDB for vector storage
 - FastAPI for the backend framework
 - Streamlit for the frontend interface
+- Ollama for LLM serving
+
+## Foot Notes
+

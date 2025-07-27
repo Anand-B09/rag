@@ -6,11 +6,11 @@ PYTEST = pytest
 PYTEST_FLAGS = -v
 PYTEST_COV_FLAGS = --cov=frontend --cov=backend --cov-report=term-missing
 LOCUST = locust
-DOCKER_COMPOSE = docker compose  # Use 'docker compose' instead of 'docker-compose'
+DOCKER_COMPOSE = docker compose  # Use 'docker compose' instead of 'docker-compose' depending on your Docker version
 
 # Docker commands
 .PHONY: build up down logs backend frontend
-.PHONY: test test-all test-unit test-integration test-performance test-docker install-test clean
+.PHONY: test-unit install-test clean
 
 build:
 	$(DOCKER_COMPOSE) build
@@ -49,51 +49,13 @@ clean:
 	rm -rf *.egg-info/
 
 test-unit:
-	$(PYTEST) $(PYTEST_FLAGS) tests/unit/
-
-test-integration:
-	$(PYTEST) $(PYTEST_FLAGS) tests/integration/
-
-test-performance:
-	$(LOCUST) -f tests/performance/locustfile.py --host http://localhost:8000 \
-		--headless -u 10 -r 1 --run-time 30s
-
-test-performance-web:
-	$(LOCUST) -f tests/performance/locustfile.py --host http://localhost:8000
-
-test-coverage:
-	$(PYTEST) $(PYTEST_FLAGS) $(PYTEST_COV_FLAGS) tests/
-
-# Docker-based testing
-test-frontend-docker:
-	$(DOCKER_COMPOSE) run --rm frontend $(PYTEST) $(PYTEST_FLAGS) tests/unit/test_frontend.py
-
-test-backend-docker:
-	$(DOCKER_COMPOSE) run --rm backend $(PYTEST) $(PYTEST_FLAGS) tests/unit/test_backend.py
-
-test-integration-docker:
-	$(DOCKER_COMPOSE) run --rm backend $(PYTEST) $(PYTEST_FLAGS) tests/integration/
-
-test-docker-all: test-frontend-docker test-backend-docker test-integration-docker
-
-# Combined test commands
-test-all: test-unit test-integration test-coverage
-
-test-local: clean install-test test-all
-
-# Development helpers
-watch-tests:
-	$(PYTEST) $(PYTEST_FLAGS) --looponfail tests/
-
-coverage-report: test-coverage
-	coverage html
-	@echo "Coverage report generated in htmlcov/index.html"
+	$(PYTEST) $(PYTEST_FLAGS) tests/
 
 # Help
 help:
 	@echo "RAG System Commands:"
 	@echo "Docker Commands:"
-	@echo "  make build              Build all containers"
+	@echo "  make build             Build all containers"
 	@echo "  make up                Start all containers"
 	@echo "  make down              Stop all containers"
 	@echo "  make logs              View container logs"
@@ -103,14 +65,5 @@ help:
 	@echo "Test Commands:"
 	@echo "  make install-test      Install test dependencies"
 	@echo "  make test-unit         Run unit tests"
-	@echo "  make test-integration  Run integration tests"
-	@echo "  make test-performance  Run performance tests"
-	@echo "  make test-coverage     Run tests with coverage"
-	@echo "  make test-all          Run all tests"
-	@echo "  make test-local        Run all tests locally"
-	@echo "  make test-docker-all   Run all tests in Docker"
 	@echo ""
-	@echo "Development Commands:"
-	@echo "  make watch-tests       Run tests in watch mode"
-	@echo "  make coverage-report   Generate HTML coverage report"
 	@echo "  make clean             Clean up cache files"

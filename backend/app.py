@@ -12,10 +12,8 @@ from pydantic import BaseModel
 
 import chromadb
 import tempfile
-import os
 import fitz  # PyMuPDF
 
-from typing import List, Dict, Optional, Any
 from datetime import datetime
 import logging
 import uvicorn
@@ -72,7 +70,7 @@ class RAGService:
         """ Initialize ChromaDB, Ollama, and other components """
         try:
             # Initialize ChromaDB client
-            chroma_host = os.getenv("CHROMA_HOST", "localhost")
+            chroma_host = os.getenv("CHROMA_HOST", "chromadb")
             chroma_port = os.getenv("CHROMA_PORT", "8000")
             self.client = chromadb.HttpClient(host=chroma_host, port=chroma_port)
             try:
@@ -95,7 +93,7 @@ class RAGService:
             self.embed_model = HuggingFaceEmbedding(model_name=embedding_model)
 
             # Initialize LLM
-            ollama_host = os.getenv("OLLAMA_HOST", "localhost")
+            ollama_host = os.getenv("OLLAMA_HOST", "ollama")
             ollama_port = os.getenv("OLLAMA_PORT", "11434")
             llm_model = os.getenv("LLM_MODEL", "gemma3:1b")
             base_url = f"http://{ollama_host}:{ollama_port}"
@@ -376,7 +374,7 @@ class RAGService:
             try:
                 import requests
                 base_url = self.llm.base_url.rstrip('/')
-                health_response = requests.get(f"{base_url}/api/health", timeout=5)
+                health_response = requests.get(f"{base_url}", timeout=5)
                 ollama_connected = health_response.status_code == 200
             except Exception as e:
                 logger.error(f"Ollama health check failed: {str(e)}")
