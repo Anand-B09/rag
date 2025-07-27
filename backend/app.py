@@ -1,279 +1,31 @@
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Depends
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from llama_index.core import VectorStoreIndex, StorageContext, Document, Settings
 from llama_index.vector_stores.chroma import ChromaVectorStore
 from llama_index.llms.ollama import Ollama
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
-from pydantic import BaseModel, Field, BaseSettings
+from dataclasses import dataclass, asdict, field
+from typing import TypedDict, Any, List, Dict, Optional
+import os
+from pydantic import BaseModel
+
 import chromadb
 import tempfile
 import os
 import fitz  # PyMuPDF
-import uuid
+
 from typing import List, Dict, Optional, Any
 from datetime import datetime
 import logging
 import uvicorn
-from functools import lru_cache
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Pydantic models for request/response
-# Configuration
-class Settings(BaseSettings):
-    chroma_host: str = "chroma"
-    chroma_port: int = 8000
-    embed_model: str = "BAAI/bge-small-en-v1.5"
-    llm_model: str = "llama3.1:latest"
-    collection_name: str = "pdf_docs"
-    
-    class Config:
-        env_prefix = "RAG_"
-
-@lru_cache()
-def get_settings():
-    return Settings()
-
-class DocumentMetadata(BaseModel):
-    id: str
-    filename: str
-    timestamp: str
-    page_count: int
-    status: str = "active"
-    source: str
-    embedding_model: str
-
-class QueryRequest(BaseModel):
-    query: str
-    top_k: int = Field(default=5, ge=1, le=20)
-
-class QueryResponse(BaseModel):
-    response: str
-    source_documents: List[DocumentMetadata]
-
-class HealthStatus(BaseModel):
-    status: str
-    version: str = "1.0.0"
-    components: Dict[str, str]
-
-class RAGService:
-    def __init__(self, settings: Settings = Depends(get_settings)):
-        """Initialize RAG service with configuration."""
-        self.settings = settings
-        self.documents: Dict[str, DocumentMetadata] = {}
-        self.embed_model = None
-        self.initialize_components()
-        
-    def initialize_components(self):
-        """Initialize ChromaDB, vector store, and LLM components."""
-        try:
-            # Initialize embedding model
-            self.embed_model = HuggingFaceEmbedding(
-                model_name=self.settings.embed_model
-            )
-            Settings.embed_model = self.embed_model  # Set global embed model
-            
-            # Initialize ChromaDB
-            self.client = chromadb.HttpClient(
-                host=self.settings.chroma_host,
-                port=self.settings.chroma_port
-            )
-            
-            # Create or get collection with metadata
-            self.collection = self.client.get_or_create_collection(
-                name=self.settings.collection_name,
-                metadata={
-                    "created_at": datetime.now().isoformat(),
-                    "embedding_model": self.settings.embed_model,
-                    "llm_model": self.settings.llm_model
-                }
-            )
-            
-            # Initialize vector store and index
-            self.vector_store = ChromaVectorStore(chroma_collection=self.collection)
-            self.storage_context = StorageContext.from_defaults(
-                vector_store=self.vector_store
-            )
-            self.index = VectorStoreIndex.from_vector_store(
-                self.vector_store,
-                embed_model=self.embed_model
-            )
-            
-            # Initialize LLM
-            self.llm = Ollama(
-                model=self.settings.llm_model,
-                request_timeout=300.0
-            )
-            
-            # Create query engine
-            self.query_engine = self.index.as_query_engine(
-                llm=self.llm,
-                similarity_top_k=5
-            )
-            
-            # Load existing documents
-            self.load_existing_documents()
-            logger.info("RAG Service initialized successfully")
-            
-        except Exception as e:
-            logger.error(f"Failed to initialize RAG Service: {str(e)}")
-            raise
-    
-    def load_existing_documents(self):
-        """Load existing documents metadata from ChromaDB."""
-        try:
-            metadata_list = self.collection.get()
-            for doc_id, metadata in zip(metadata_list.get("ids", []), metadata_list.get("metadatas", [])):
-                if metadata:
-                    self.documents[doc_id] = DocumentMetadata(
-                        id=doc_id,
-                        filename=metadata.get("filename", "unknown"),
-                        timestamp=metadata.get("timestamp", datetime.now().isoformat()),
-                        page_count=metadata.get("page_count")
-                    )
-            logger.info(f"Loaded {len(self.documents)} existing documents")
-        except Exception as e:
-            logger.error(f"Error loading existing documents: {str(e)}")
-            raise
-
-    def extract_pdf_text(self, file_path: str) -> tuple[str, int]:
-        """
-        Extract text content from a PDF file.
-        Returns tuple of (text, page_count).
-        """
-        try:
-            doc = fitz.open(file_path)
-            text = ""
-            page_count = doc.page_count
-            
-            if page_count == 0:
-                raise ValueError("PDF file contains no pages")
-            
-            for page in doc:
-                page_text = page.get_text().strip()
-                if page_text:  # Only add non-empty pages
-                    text += page_text + "\n\n"
-            
-            doc.close()
-            
-            if not text.strip():
-                raise ValueError("PDF file contains no extractable text")
-                
-            return text.strip(), page_count
-            
-        except Exception as e:
-            logger.error(f"Error extracting PDF text: {str(e)}")
-            raise
-
-    def add_document_to_index(self, text: str, metadata: Dict[str, Any]) -> str:
-        """Add a document to the vector store and update tracking."""
-        try:
-            # Generate unique document ID
-            doc_id = f"doc_{uuid.uuid4().hex[:8]}"
-            
-            # Create document with metadata
-            document = Document(
-                text=text,
-                metadata={
-                    **metadata,
-                    "id": doc_id,
-                    "embedding_model": self.settings.embed_model,
-                    "source": "pdf_upload",
-                    "indexed_at": datetime.now().isoformat()
-                }
-            )
-            
-            # Insert into vector store
-            self.index = self.index.insert(document)
-            
-            # Update tracking with full metadata
-            self.documents[doc_id] = DocumentMetadata(
-                id=doc_id,
-                filename=metadata["filename"],
-                timestamp=metadata["timestamp"],
-                page_count=metadata["page_count"],
-                source=metadata.get("source", "pdf_upload"),
-                embedding_model=self.settings.embed_model,
-                status="active"
-            )
-            
-            logger.info(f"Successfully added document {doc_id} to index")
-            return doc_id
-            
-        except Exception as e:
-            logger.error(f"Error adding document to index: {str(e)}")
-            raise
-
-    def delete_document_from_store(self, doc_id: str) -> bool:
-        """Remove a document from the vector store and tracking."""
-        try:
-            if doc_id not in self.documents:
-                return False
-                
-            # Mark document as deleted in ChromaDB
-            self.collection.update(
-                ids=[doc_id],
-                metadatas=[{"status": "deleted", "deleted_at": datetime.now().isoformat()}]
-            )
-            
-            # Remove from vector store
-            self.collection.delete(ids=[doc_id])
-            
-            # Remove from tracking
-            doc_info = self.documents.pop(doc_id)
-            logger.info(f"Successfully deleted document {doc_id} ({doc_info.filename})")
-            
-            # Force refresh index
-            self.index = VectorStoreIndex.from_vector_store(
-                self.vector_store,
-                embed_model=self.embed_model
-            )
-            
-            return True
-            
-        except Exception as e:
-            logger.error(f"Error deleting document: {str(e)}")
-            raise
-
-    def query_documents(self, query: str, top_k: int = 5) -> QueryResponse:
-        """Query the document store and return response with sources."""
-        try:
-            response = self.query_engine.query(query)
-            source_docs = [
-                self.documents[node.node.metadata["id"]]
-                for node in response.source_nodes
-                if node.node.metadata["id"] in self.documents
-            ]
-            return QueryResponse(
-                response=str(response),
-                source_documents=source_docs[:top_k]
-            )
-        except Exception as e:
-            logger.error(f"Error querying documents: {str(e)}")
-            raise
-
-    def get_health_status(self) -> HealthStatus:
-        """Get the health status of all components."""
-        status = {
-            "chromadb": "healthy" if self.client.heartbeat() else "unhealthy",
-            "llm": "healthy",  # Add actual health check if available
-            "document_count": str(len(self.documents))
-        }
-        return HealthStatus(
-            status="healthy" if all(s == "healthy" for s in status.values()) else "degraded",
-            components=status
-        )
-
-# Initialize RAG Service
-rag_service = RAGService()
-
-# Initialize FastAPI app with CORS
 app = FastAPI(title="RAG API", version="1.0.0")
 
-# Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # Adjust in production
@@ -282,15 +34,455 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-@app.get("/health")
-async def health_check() -> HealthStatus:
+#Pydantic models
+class QueryRequest(BaseModel):    
+    query: str
+    top_k: int = 5  # Validated in the API endpoint
+    enable_streaming: bool = False
+
+
+class QueryResponse(BaseModel):
+    response: str
+    sources: List[Dict]
+    processing_time: float
+
+class IngestResponse(BaseModel):
+    message: str
+    documents_processed: int
+    processing_time: float
+
+class HealthResponse(BaseModel):
+    status: str
+    chroma_connected: bool
+    documents_count: int
+
+class DocumentInfo(BaseModel):
+    filename: str
+    page_count: int
+    upload_time: str
+    file_size: int
+
+
+class RAGService:
+    def __init__(self):
+        self.documents_info = {}
+        self.initialize_components()
+        
+    def initialize_components(self):
+        """ Initialize ChromaDB, Ollama, and other components """
+        try:
+            # Initialize ChromaDB client
+            chroma_host = os.getenv("CHROMA_HOST", "localhost")
+            chroma_port = os.getenv("CHROMA_PORT", "8000")
+            self.client = chromadb.HttpClient(host=chroma_host, port=chroma_port)
+            try:
+                self.client.heartbeat()
+                logger.info(f"Connected to ChromaDB successfully at {chroma_host}:{chroma_port}")
+            except Exception as e:
+                logger.warning(f"ChromaDB connection test failed: {e}")
+
+            self.collection = self.client.get_or_create_collection(
+                name="pdf_docs",
+                metadata={
+                    "description": "Collection for PDF documents",
+                    "created_at": datetime.now().isoformat(),
+                    "source": "rag_service",
+                    "hnsw:space": "cosine"  # Use cosine similarity
+                }
+            )
+
+            embedding_model = os.getenv("EMBEDDING_MODEL", "BAAI/bge-small-en-v1.5")
+            self.embed_model = HuggingFaceEmbedding(model_name=embedding_model)
+
+            # Initialize LLM
+            ollama_host = os.getenv("OLLAMA_HOST", "localhost")
+            ollama_port = os.getenv("OLLAMA_PORT", "11434")
+            llm_model = os.getenv("LLM_MODEL", "gemma3:1b")
+            base_url = f"http://{ollama_host}:{ollama_port}"
+            
+            # Test Ollama connection first
+            import requests
+            try:
+                health_response = requests.get(f"{base_url}")
+                if health_response.status_code == 200:
+                    logger.info(f"Ollama server is healthy at {base_url}")
+                    
+                    # Check if model is pulled
+                    model_response = requests.get(f"{base_url}/api/tags")
+                    if model_response.status_code == 200:
+                        available_models = [m.get("name") for m in model_response.json().get("models", [])]
+                        if llm_model not in available_models:
+                            logger.warning(f"Model {llm_model} not found, it will be pulled on first use")
+                    
+                    self.llm = Ollama(
+                        model=llm_model,
+                        base_url=base_url,
+                        request_timeout=300.0
+                    )
+                    logger.info(f"Initialized LLM: {llm_model} at {base_url}")
+                else:
+                    raise ConnectionError(f"Ollama server health check failed with status {health_response.status_code}")
+            except requests.RequestException as e:
+                logger.error(f"Failed to connect to Ollama server at {base_url}: {str(e)}")
+                # Initialize anyway to allow startup, but log the error
+                self.llm = Ollama(
+                    model=llm_model,
+                    base_url=base_url,
+                    request_timeout=300.0
+                )
+
+            # Initialize Vector Store
+            self.vector_store = ChromaVectorStore(chroma_collection=self.collection)
+
+            # Initialize Storage Context
+            self.storage_context = StorageContext.from_defaults(vector_store=self.vector_store)
+
+            try:
+                # Check if the collection has documents first
+                collection_count = self.collection.count()
+                if collection_count > 0:
+                    self.index = VectorStoreIndex.from_vector_store(
+                        self.vector_store, 
+                        embed_model=self.embed_model
+                    )
+                    logger.info(f"Loaded existing index with {collection_count} documents")
+                else:
+                    self.index = None
+                    logger.info("No existing documents found in ChromaDB, starting with an empty index")
+            except Exception as e:
+                logger.warning(f"Error loading existing index: {e}")
+                self.index = None
+                logger.info("Starting with an empty index")
+            
+            self.load_existing_documents()
+            logger.info("RAG Service initialized successfully")
+        except Exception as e:
+            logger.error(f"Failed to initialize RAG Service: {str(e)}")
+
+   
+    def load_existing_documents(self):
+        try:
+            """ Load existing documents from ChromaDB into the service """
+            result = self.collection.get(include=["metadatas"])
+
+            if result and result["metadatas"]:
+                filename_stats = {}
+                for metadata in result["metadatas"]:
+                    if metadata and 'source' in metadata:
+                        filename = metadata['source']
+                        if filename not in filename_stats:
+                            filename_stats[filename] = {
+                                "page_count": 0,
+                                "upload_time": metadata.get("upload_time", 'Unknown'),
+                                "file_size": 'Unknown'
+                            }
+                        filename_stats[filename]["page_count"] += 1
+                for filename, stats in filename_stats.items():
+                    self.documents_info[filename] = {
+                        "filename": filename,
+                        "page_count": stats["page_count"],
+                        "upload_time": stats["upload_time"],
+                        "file_size": stats.get("file_size", 0) if isinstance(stats.get("file_size"), int) else 0
+                    }
+                logger.info(f"Loaded {len(filename_stats)} existing documents from ChromaDB")
+            else:
+                logger.info("No existing documents found in ChromaDB")
+        except Exception as e:
+            logger.error(f"Error loading existing documents: {str(e)}")
+
+
+    def extract_pdf_text(self, pdf_path: str, filename: str) -> List[Document]:
+        """
+        Extract text from each page of a PDF and return a list of Document objects.
+        Each Document contains the text and metadata for a single page.
+        """
+        documents = []
+        try:
+            if not os.path.exists(pdf_path):
+                raise FileNotFoundError(f"PDF File not found: {pdf_path}")
+            
+            doc = fitz.open(pdf_path)            
+            page_count = doc.page_count
+
+            if page_count == 0:
+                logger.warning(f"PDF {filename} contains no pages.")
+                return documents
+
+            for page_num in range(len(doc)):
+                page = doc[page_num]
+                page_text = page.get_text("text").strip()
+                if page_text:
+                    metadata = {
+                        "filename": filename,
+                        "page": page_num + 1,                        
+                        "upload_time": datetime.now().isoformat(),
+                        "source": filename
+                    }
+                    documents.append(Document(text=page_text, metadata=metadata))
+            doc.close()
+
+            if not documents:
+                logger.warning(f"No extractable text found in {filename}.")
+
+            return documents
+        except Exception as e:
+            logger.error(f"Error extracting PDF text from {filename}: {str(e)}")
+            return documents
+
+    def add_document_to_index(self, documents: List[Document]):
+        """
+        Add a list of Document objects to the vector store and update the index.
+        """
+        try:
+            if not documents:
+                logger.warning("No documents provided to add to index.")
+                return
+
+            # If index does not exist, create it
+            if self.index is None:
+                self.index = VectorStoreIndex.from_documents(
+                    documents,
+                    embed_model=self.embed_model,
+                    storage_context=self.storage_context
+                )
+            else:
+                for doc in documents:
+                    self.index.insert(doc)
+                logger.info(f"Added {len(documents)} documents to existing index")
+            self.index.storage_context.persist()
+
+        except Exception as e:
+            logger.error(f"Error adding documents to index: {str(e)}")
+
+    def delete_document_from_store(self, filename: str) -> bool:
+        """
+        Delete all pages of a document (by filename) from the vector store and update metadata.
+        Returns True if any document was deleted, False otherwise.
+        """
+        try:
+            # Get all document IDs for the given filename
+            result = self.collection.get(include=["ids", "metadatas"])
+            ids_to_delete = []
+            if result and result["ids"] and result["metadatas"]:
+                for doc_id, metadata in zip(result["ids"], result["metadatas"]):
+                    if metadata and metadata.get("filename") == filename:
+                        ids_to_delete.append(doc_id)
+
+            if not ids_to_delete:
+                logger.warning(f"No documents found for filename: {filename}")
+                return False
+
+            # Delete from ChromaDB collection
+            self.collection.delete(ids=ids_to_delete)
+            logger.info(f"Deleted {len(ids_to_delete)} pages for document '{filename}' from ChromaDB.")
+
+            # Remove from local metadata
+            if filename in self.documents_info:
+                del self.documents_info[filename]
+
+            # Rebuild index if needed
+            if self.index is not None:
+                # Rebuild index from remaining documents
+                remaining_result = self.collection.get(include=["metadatas"])
+                remaining_docs = []
+                if remaining_result and remaining_result["metadatas"]:
+                    for metadata in remaining_result["metadatas"]:
+                        if metadata and "text" in metadata:
+                            remaining_docs.append(Document(text=metadata["text"], metadata=metadata))
+                if remaining_docs:
+                    self.index = VectorStoreIndex.from_documents(
+                        remaining_docs,
+                        embed_model=self.embed_model,
+                        storage_context=self.storage_context
+                    )
+                else:
+                    self.index = None
+
+            return True
+        except Exception as e:
+            logger.error(f"Error deleting document '{filename}': {str(e)}")
+            return False
+
+    def query_documents(self, query: str, top_k: int = 5, enable_streaming: bool = False) -> Dict:
+        """
+        Query the vector index and return the top matching documents and LLM response.
+        """
+        import time
+        start_time = time.time()
+        if not self.index:
+            logger.warning("No index available for querying.")
+            return {
+                "response": "",
+                "sources": [],
+                "processing_time": 0.0
+            }
+        try:
+            logger.info(f"Querying documents with query: {query}, top_k: {top_k}, streaming: {enable_streaming}")
+            # Query the index
+            logger.info(f"LLM: {self.llm}")
+            query_engine = self.index.as_query_engine(
+                llm=self.llm,
+                similarity_top_k=top_k,
+                streaming=enable_streaming
+            )
+            response = query_engine.query(query)
+            logger.info(f"Query response: {response}")
+            source_docs = []
+            if hasattr(response, 'source_nodes') and response.source_nodes:
+                for node in response.source_nodes:
+                    source_info = {
+                        "source": node.metadata.get("source", "Unknown"),
+                        "page": node.metadata.get("page", "Unknown"),
+                        "text": node.node.text[:300] if hasattr(node.node, 'text') else "",
+                        "score": float(getattr(node, 'score', 0.0))
+                    }
+                    source_docs.append(source_info)
+            processing_time = time.time() - start_time
+            logger.info(f"Query processed in {processing_time:.2f} seconds")
+            return {
+                "response": str(response.response) if hasattr(response, 'response') else str(response),
+                "sources": source_docs,
+                "processing_time": processing_time
+            }
+        except Exception as e:
+            logger.error(f"Error querying documents: {str(e)}")
+            return {
+                "response": "",
+                "sources": [],
+                "processing_time": 0.0
+            }
+
+    def get_health_status(self) -> Dict:
+        """Get service health status"""
+        try:
+            # Check ChromaDB connection
+            max_retries = 3
+            chroma_connected = False
+            for attempt in range(max_retries):
+                try:
+                    self.client.heartbeat()
+                    chroma_connected = True
+                    break
+                except Exception as e:
+                    if attempt == max_retries - 1:
+                        logger.error(f"ChromaDB connection test failed after {max_retries} attempts: {str(e)}")
+                    else:
+                        logger.warning(f"ChromaDB connection test failed: {str(e)}, retrying...")
+                        import time
+                        time.sleep(1)
+
+            # Check Ollama connection
+            ollama_connected = False
+            try:
+                import requests
+                base_url = self.llm.base_url.rstrip('/')
+                health_response = requests.get(f"{base_url}/api/health", timeout=5)
+                ollama_connected = health_response.status_code == 200
+            except Exception as e:
+                logger.error(f"Ollama health check failed: {str(e)}")
+
+            documents_count = len(self.documents_info) if self.documents_info else 0
+            
+            # Overall status is healthy only if both critical components are connected
+            status = "healthy" if (chroma_connected and ollama_connected) else "degraded"
+            
+            return {
+                "status": status,
+                "chroma_connected": chroma_connected,
+                "ollama_connected": ollama_connected,
+                "documents_count": documents_count
+            }
+        except Exception as e:
+            logger.error(f"Error getting health status: {str(e)}")
+            return {
+                "status": "unhealthy",
+                "chroma_connected": False,
+                "ollama_connected": False,
+                "documents_count": 0
+            }
+
+# Initialize RAG Service
+rag_service = RAGService()
+
+@app.post("/ingest", response_model=IngestResponse)
+async def ingest_documents(files: List[UploadFile] = File(...)):
+    """Ingest multiple PDF documents."""
+    logger.info("Ingesting documents...")
+    processed_count = 0
+    start_time = datetime.now()
+
+    if not files:
+        raise HTTPException(status_code=400, detail="No files provided")
+    
+    try:
+        all_documents = []
+
+        for file in files:
+            if not file.filename:
+                raise HTTPException(status_code=400, detail="File name is required")
+            if not file.filename.lower().endswith('.pdf'):
+                raise HTTPException(status_code=400, detail="Only PDF files are supported")
+            
+            content = await file.read()
+            if len(content) > 50 * 1024 * 1024: # 50MB limit
+                raise HTTPException(status_code=400, detail="File size exceeds 50MB limit")
+    
+            tmp_path = None
+            # Save uploaded file temporarily
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+                tmp.write(content)
+                tmp_path = tmp.name
+            try:
+                # Extract text and process document
+                documents = rag_service.extract_pdf_text(
+                    pdf_path=tmp_path,
+                    filename=file.filename
+                )
+
+                if not documents:
+                    logger.warning(f"No text extracted from {file.filename}, skipping.")
+                    continue
+
+                all_documents.extend(documents)
+                current_time = datetime.now().isoformat()
+                rag_service.documents_info[file.filename] = {
+                    "filename": file.filename,
+                    "timestamp": current_time,
+                    "page_count": len(documents),
+                    "source": "pdf_upload",
+                    "file_size": len(content),
+                    "mime_type": file.content_type,
+                }
+                processed_count += 1
+            finally:
+                if tmp_path and os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+
+        # Add all documents to index
+        if all_documents:
+            rag_service.add_document_to_index(all_documents)
+
+        processing_time = (datetime.now() - start_time).total_seconds()        
+        logger.info(f"Processed {processed_count} documents in {processing_time:.2f} seconds")
+
+        return IngestResponse(
+            message=f"Successfully processed {processed_count} documents",
+            documents_processed=processed_count,
+            processing_time=processing_time
+        )
+    except Exception as e:
+        logger.error(f"Error ingesting document: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/health", response_model=HealthResponse)
+async def health_check():
     """Check if the service is healthy."""
     return rag_service.get_health_status()
 
-@app.get("/documents")
-async def list_documents() -> Dict[str, List[DocumentMetadata]]:
+@app.get("/documents", response_model=List[DocumentInfo])
+async def list_documents():
     """List all processed documents."""
-    return {"documents": list(rag_service.documents.values())}
+    return list(rag_service.documents_info.values())
 
 @app.delete("/documents/{doc_id}")
 async def delete_document(doc_id: str):
@@ -303,71 +495,28 @@ async def delete_document(doc_id: str):
         logger.error(f"Error deleting document: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/query")
-async def query_api(query_request: QueryRequest) -> QueryResponse:
+@app.post("/query", response_model=QueryResponse)
+async def query_documents(query_request: QueryRequest):
     """Query the document store."""
-    try:
-        return rag_service.query_documents(
-            query_request.query,
-            query_request.top_k
+    if not query_request.query or not query_request.query.strip():
+        raise HTTPException(status_code=400, detail="Query field is required and cannot be empty")
+    if len(query_request.query) < 3:
+        raise HTTPException(status_code=400, detail="Query must be at least 3 characters long")
+    if query_request.top_k < 1 or query_request.top_k > 20:
+        raise HTTPException(status_code=400, detail="top_k must be between 1 and 20")
+    try:            
+        result = rag_service.query_documents(
+            query=query_request.query.strip(),
+            top_k=query_request.top_k,
+            enable_streaming=query_request.enable_streaming
         )
+        return QueryResponse(**result)
+    except KeyError:
+        raise HTTPException(status_code=400, detail="query field is required")
     except Exception as e:
         logger.error(f"Error processing query: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/ingest")
-async def ingest_api(
-    file: UploadFile = File(...),
-    settings: Settings = Depends(get_settings)
-) -> DocumentMetadata:
-    """Ingest a PDF document."""
-    if not file.filename.lower().endswith('.pdf'):
-        raise HTTPException(
-            status_code=400,
-            detail="Only PDF files are supported"
-        )
-    
-    tmp_path = None
-    try:
-        # Save uploaded file temporarily
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
-            content = await file.read()
-            tmp.write(content)
-            tmp_path = tmp.name
-
-        # Extract text and process document
-        text, page_count = rag_service.extract_pdf_text(tmp_path)
-        
-        # Prepare metadata
-        current_time = datetime.now().isoformat()
-        metadata = {
-            "filename": file.filename,
-            "timestamp": current_time,
-            "page_count": page_count,
-            "source": "pdf_upload",
-            "file_size": len(content),
-            "mime_type": file.content_type,
-            "embedding_model": settings.embed_model
-        }
-        
-        # Add to index
-        doc_id = rag_service.add_document_to_index(
-            text=text,
-            metadata=metadata
-        )
-        
-        logger.info(f"Successfully ingested {file.filename} ({page_count} pages)")
-        return rag_service.documents[doc_id]
-    
-    except ValueError as e:
-        logger.error(f"Invalid PDF content: {str(e)}")
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        logger.error(f"Error ingesting document: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        if tmp_path and os.path.exists(tmp_path):
-            os.remove(tmp_path)
 
 if __name__ == "__main__":
     uvicorn.run(

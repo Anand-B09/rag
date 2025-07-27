@@ -58,7 +58,7 @@ services:
     restart: unless-stopped
 
   chromadb:
-    image: chromadb/chroma:latest
+    image: chromadb/chroma:0.5.3
     volumes:
       - chroma-data:/chroma/chroma
     environment:
