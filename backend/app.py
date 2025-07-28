@@ -1,60 +1,133 @@
+"""
+RAG (Retrieval-Augmented Generation) API Service
+
+This module provides a FastAPI-based service that combines document storage, 
+vector search, and language model capabilities to enable question-answering 
+over uploaded PDF documents.
+
+Key components:
+- FastAPI for the web API
+- ChromaDB for vector storage
+- Ollama for LLM inference
+- LlamaIndex for RAG orchestration
+- PyMuPDF for PDF processing
+"""
+
+# Standard library imports
+import os
+import tempfile
+import logging
+from datetime import datetime
+from typing import TypedDict, Any, List, Dict, Optional
+from dataclasses import dataclass, asdict, field
+
+# Third-party imports
+import uvicorn
+import chromadb
+import fitz  # PyMuPDF
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 from llama_index.core import VectorStoreIndex, StorageContext, Document, Settings
 from llama_index.vector_stores.chroma import ChromaVectorStore
 from llama_index.llms.ollama import Ollama
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
-from dataclasses import dataclass, asdict, field
-from typing import TypedDict, Any, List, Dict, Optional
-import os
-from pydantic import BaseModel
 
-import chromadb
-import tempfile
-import fitz  # PyMuPDF
-
-from datetime import datetime
-import logging
-import uvicorn
-
-# Set up logging
-logging.basicConfig(level=logging.INFO)
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="RAG API", version="1.0.0")
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # Adjust in production
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+# Initialize FastAPI application
+app = FastAPI(
+    title="RAG API",
+    version="1.0.0",
+    description="API for document ingestion, retrieval, and question-answering using RAG architecture",
+    docs_url="/docs",
+    redoc_url="/redoc"
 )
 
-#Pydantic models
-class QueryRequest(BaseModel):    
+# Configure CORS middleware
+# TODO: In production, replace "*" with specific allowed origins
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "DELETE"],
+    allow_headers=["*"],
+    expose_headers=["Content-Length"]
+)
+
+# Pydantic data models
+class QueryRequest(BaseModel):
+    """
+    Request model for document querying endpoint.
+    
+    Attributes:
+        query: The user's question or query text
+        top_k: Number of most relevant documents to retrieve (default: 5)
+        enable_streaming: Whether to enable streaming response (default: False)
+    """
     query: str
-    top_k: int = 5  # Validated in the API endpoint
+    top_k: int = 5
     enable_streaming: bool = False
 
 
 class QueryResponse(BaseModel):
+    """
+    Response model for document querying endpoint.
+    
+    Attributes:
+        response: The generated answer text
+        sources: List of source documents used for the response
+        processing_time: Time taken to process the query in seconds
+    """
     response: str
     sources: List[Dict]
     processing_time: float
 
+
 class IngestResponse(BaseModel):
+    """
+    Response model for document ingestion endpoint.
+    
+    Attributes:
+        message: Status message about the ingestion process
+        documents_processed: Number of documents successfully processed
+        processing_time: Time taken to process the documents in seconds
+    """
     message: str
     documents_processed: int
     processing_time: float
 
+
 class HealthResponse(BaseModel):
+    """
+    Response model for health check endpoint.
+    
+    Attributes:
+        status: Overall system status ('healthy', 'degraded', or 'unhealthy')
+        chroma_connected: Whether ChromaDB connection is active
+        documents_count: Total number of documents in the system
+    """
     status: str
     chroma_connected: bool
     documents_count: int
 
+
 class DocumentInfo(BaseModel):
+    """
+    Model for document metadata information.
+    
+    Attributes:
+        filename: Name of the document file
+        page_count: Number of pages in the document
+        upload_time: Timestamp of when the document was uploaded
+        file_size: Size of the document in bytes
+    """
     filename: str
     page_count: int
     upload_time: str
@@ -62,12 +135,56 @@ class DocumentInfo(BaseModel):
 
 
 class RAGService:
+    """
+    RAG (Retrieval-Augmented Generation) Service for document processing and querying.
+    
+    This service manages:
+    - Document ingestion and storage
+    - Vector embeddings and search
+    - LLM-based question answering
+    - System health monitoring
+    
+    The service integrates:
+    - ChromaDB for vector storage
+    - Ollama for LLM inference
+    - HuggingFace for embeddings
+    - PyMuPDF for PDF processing
+    """
+
     def __init__(self):
+        """
+        Initialize the RAG service.
+        
+        Sets up:
+        - Document metadata storage
+        - Vector store connection
+        - LLM configuration
+        - Embedding model
+        """
         self.documents_info = {}
         self.initialize_components()
         
     def initialize_components(self):
-        """ Initialize ChromaDB, Ollama, and other components """
+        """
+        Initialize and configure all service components.
+        
+        Sets up:
+        - ChromaDB connection and collection
+        - Embedding model (HuggingFace)
+        - Ollama LLM client
+        - Vector store and index
+        
+        Environment Variables:
+            CHROMA_HOST: ChromaDB server host (default: "chromadb")
+            CHROMA_PORT: ChromaDB server port (default: "8000")
+            EMBEDDING_MODEL: HuggingFace model name (default: "BAAI/bge-small-en-v1.5")
+            OLLAMA_HOST: Ollama server host (default: "ollama")
+            OLLAMA_PORT: Ollama server port (default: "11434")
+            LLM_MODEL: Ollama model name (default: "gemma3:1b")
+        
+        Raises:
+            Exception: If critical components fail to initialize
+        """
         try:
             # Initialize ChromaDB client
             chroma_host = os.getenv("CHROMA_HOST", "chromadb")
@@ -159,8 +276,26 @@ class RAGService:
 
    
     def load_existing_documents(self):
+        """
+        Load existing document metadata from ChromaDB into the service.
+        
+        This method:
+        1. Retrieves all document metadata from ChromaDB
+        2. Aggregates page-level metadata into document-level information
+        3. Updates the documents_info dictionary with:
+           - Document filenames
+           - Page counts
+           - Upload timestamps
+           - File sizes
+        
+        Note:
+            This method is called during initialization to ensure
+            the service's document metadata stays in sync with ChromaDB.
+        
+        Raises:
+            Exception: If there's an error accessing ChromaDB or processing metadata
+        """
         try:
-            """ Load existing documents from ChromaDB into the service """
             result = self.collection.get(include=["metadatas"])
 
             if result and result["metadatas"]:
@@ -191,8 +326,30 @@ class RAGService:
 
     def extract_pdf_text(self, pdf_path: str, filename: str) -> List[Document]:
         """
-        Extract text from each page of a PDF and return a list of Document objects.
-        Each Document contains the text and metadata for a single page.
+        Extract text content from a PDF file and create Document objects.
+        
+        This method:
+        1. Opens and validates the PDF file
+        2. Extracts text content from each page
+        3. Creates Document objects with metadata for each page
+        
+        Args:
+            pdf_path: Absolute path to the PDF file
+            filename: Original name of the uploaded file
+            
+        Returns:
+            List[Document]: List of Document objects, each containing:
+                - Extracted text content
+                - Page number
+                - Upload timestamp
+                - Source filename
+                
+        Raises:
+            FileNotFoundError: If the PDF file doesn't exist
+            Exception: For PDF processing errors
+        
+        Note:
+            Empty pages or pages without extractable text are skipped.
         """
         documents = []
         try:
@@ -229,7 +386,23 @@ class RAGService:
 
     def add_document_to_index(self, documents: List[Document]):
         """
-        Add a list of Document objects to the vector store and update the index.
+        Add documents to the vector store and update the search index.
+        
+        This method:
+        1. Creates a new index if none exists
+        2. Adds documents to existing index if present
+        3. Persists changes to storage
+        
+        Args:
+            documents: List of Document objects to index
+            
+        Note:
+            - Documents are embedded using the configured embedding model
+            - Changes are automatically persisted to ChromaDB
+            - Empty document lists are ignored with a warning
+            
+        Raises:
+            Exception: If indexing or storage operations fail
         """
         try:
             if not documents:
@@ -254,8 +427,27 @@ class RAGService:
 
     def delete_document_from_store(self, filename: str) -> bool:
         """
-        Delete all pages of a document (by filename) from the vector store and update metadata.
-        Returns True if any document was deleted, False otherwise.
+        Delete a document and all its pages from the vector store.
+        
+        This method:
+        1. Finds all page entries for the given document
+        2. Removes them from ChromaDB
+        3. Updates local metadata
+        4. Rebuilds the search index if needed
+        
+        Args:
+            filename: Name of the document to delete
+            
+        Returns:
+            bool: True if document was found and deleted, False if not found
+            
+        Note:
+            - Deletes all pages associated with the document
+            - Automatically rebuilds index to maintain consistency
+            - Removes document metadata from local storage
+            
+        Raises:
+            Exception: If deletion or index rebuild fails
         """
         try:
             # Get all document IDs for the given filename
@@ -303,7 +495,32 @@ class RAGService:
 
     def query_documents(self, query: str, top_k: int = 5, enable_streaming: bool = False) -> Dict:
         """
-        Query the vector index and return the top matching documents and LLM response.
+        Query the document store and generate an AI response.
+        
+        This method:
+        1. Performs semantic search using the query
+        2. Retrieves the top-k most relevant documents
+        3. Uses the LLM to generate a response
+        4. Tracks processing time and source documents
+        
+        Args:
+            query: User's question or query text
+            top_k: Number of relevant documents to retrieve (default: 5)
+            enable_streaming: Whether to enable streaming response (default: False)
+            
+        Returns:
+            Dict containing:
+                - response: Generated answer text
+                - sources: List of source documents with relevance scores
+                - processing_time: Time taken to process the query
+                
+        Note:
+            - Returns empty response if no index exists
+            - Truncates source text previews to 300 characters
+            - Logs query performance metrics
+            
+        Raises:
+            Exception: For LLM errors or query processing failures
         """
         import time
         start_time = time.time()
@@ -351,7 +568,29 @@ class RAGService:
             }
 
     def get_health_status(self) -> Dict:
-        """Get service health status"""
+        """
+        Check the health status of all service components.
+        
+        This method checks:
+        1. ChromaDB connection (with retries)
+        2. Ollama LLM service availability
+        3. Document store status
+        
+        Returns:
+            Dict containing:
+                - status: Overall service status ('healthy', 'degraded', 'unhealthy')
+                - chroma_connected: ChromaDB connection status
+                - ollama_connected: Ollama service status
+                - documents_count: Number of documents in the system
+                
+        Note:
+            - Attempts multiple retries for ChromaDB connection
+            - Service is considered healthy only if all components are connected
+            - Degrades gracefully if components are partially available
+            
+        Raises:
+            Exception: Handled internally, returns unhealthy status
+        """
         try:
             # Check ChromaDB connection
             max_retries = 3
@@ -404,7 +643,26 @@ rag_service = RAGService()
 
 @app.post("/ingest", response_model=IngestResponse)
 async def ingest_documents(files: List[UploadFile] = File(...)):
-    """Ingest multiple PDF documents."""
+    """
+    Ingest and process multiple PDF documents.
+    
+    This endpoint handles the upload, processing, and indexing of PDF documents:
+    1. Validates file type and size
+    2. Extracts text content from PDFs
+    3. Processes and indexes the content for vector search
+    4. Stores document metadata
+    
+    Args:
+        files: List of PDF files to process (max 10 files, 50MB per file)
+        
+    Returns:
+        IngestResponse: Details about the ingestion process
+        
+    Raises:
+        HTTPException: 
+            - 400: Invalid file type, size limits exceeded
+            - 500: Processing or indexing errors
+    """
     logger.info("Ingesting documents...")
     processed_count = 0
     start_time = datetime.now()
@@ -474,17 +732,51 @@ async def ingest_documents(files: List[UploadFile] = File(...)):
 
 @app.get("/health", response_model=HealthResponse)
 async def health_check():
-    """Check if the service is healthy."""
+    """
+    Check the health status of the service and its dependencies.
+    
+    Verifies:
+    - ChromaDB connection status
+    - Ollama LLM service availability
+    - Document store status
+    
+    Returns:
+        HealthResponse: Current health status of all system components
+    """
     return rag_service.get_health_status()
+
 
 @app.get("/documents", response_model=List[DocumentInfo])
 async def list_documents():
-    """List all processed documents."""
+    """
+    Retrieve a list of all processed documents in the system.
+    
+    Returns:
+        List[DocumentInfo]: List of document metadata including:
+        - Filename
+        - Page count
+        - Upload timestamp
+        - File size
+    """
     return list(rag_service.documents_info.values())
+
 
 @app.delete("/documents/{doc_id}")
 async def delete_document(doc_id: str):
-    """Delete a document from the system."""
+    """
+    Delete a document and its associated data from the system.
+    
+    Args:
+        doc_id: The unique identifier (filename) of the document to delete
+        
+    Returns:
+        JSONResponse: Success status
+        
+    Raises:
+        HTTPException:
+            - 404: Document not found
+            - 500: Error during deletion process
+    """
     try:
         if rag_service.delete_document_from_store(doc_id):
             return JSONResponse({"status": "success"})
@@ -495,7 +787,31 @@ async def delete_document(doc_id: str):
 
 @app.post("/query", response_model=QueryResponse)
 async def query_documents(query_request: QueryRequest):
-    """Query the document store."""
+    """
+    Query the document store and generate an AI response.
+    
+    This endpoint:
+    1. Validates the query parameters
+    2. Performs semantic search to find relevant documents
+    3. Uses the LLM to generate a response based on retrieved content
+    
+    Args:
+        query_request: QueryRequest containing:
+            - query: The user's question (min 3 characters)
+            - top_k: Number of relevant documents to retrieve (1-20)
+            - enable_streaming: Whether to stream the response
+            
+    Returns:
+        QueryResponse: Contains:
+            - response: Generated answer
+            - sources: List of source documents used
+            - processing_time: Time taken to process
+            
+    Raises:
+        HTTPException:
+            - 400: Invalid query parameters
+            - 500: Processing or LLM errors
+    """
     if not query_request.query or not query_request.query.strip():
         raise HTTPException(status_code=400, detail="Query field is required and cannot be empty")
     if len(query_request.query) < 3:
