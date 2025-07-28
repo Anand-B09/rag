@@ -85,8 +85,6 @@ make logs
   
 5. Access the UI:
 - Frontend: http://localhost:8501
-- Backend API: http://localhost:8001
-- ChromaDB: http://localhost:8000
 
 6. Stop the services:
 ```bash
@@ -158,7 +156,6 @@ make up
 
 #### System
 - `GET /health`: System health check
-- `GET /metrics`: System metrics
 
 ## 🎯 Features in Detail
 
@@ -178,7 +175,6 @@ make up
 - Context-aware response generation
 - Source document attribution
 - Relevance scoring
-- Rate limiting and caching
 
 ## 📈 Performance
 
@@ -186,20 +182,16 @@ make up
 - Containerized architecture
 - Independent scaling of components
 - Batch processing for large documents
-- Connection pooling and caching
 
 ### Limitations
 - Maximum file size: 50MB
-- Concurrent uploads: 5
-- Rate limit: 10 requests/minute
-- Maximum query length: 1000 characters
 
 ## 🛠 Configuration
 
 ### Environment Variables
 ```bash
 # Backend
-CHROMA_HOST=chroma
+CHROMA_HOST=chromadb
 CHROMA_PORT=8000
 MAX_UPLOAD_SIZE=10485760
 RATE_LIMIT=10
@@ -219,6 +211,3 @@ See `docker-compose.yml` for service configuration and networking.
 - FastAPI for the backend framework
 - Streamlit for the frontend interface
 - Ollama for LLM serving
-
-## Foot Notes
-
