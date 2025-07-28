@@ -129,8 +129,6 @@ pip install -r frontend/requirements.txt
 pip install -r backend/requirements.txt
 pip install -r tests/requirements-test.txt
 
-# Start services in development mode
-make up
 ```
 
 ## 🔍 API Documentation
@@ -138,7 +136,7 @@ make up
 ### Backend API
 
 #### Document Management
-- `POST /upload`: Upload PDF documents
+- `POST /ingest`: Upload PDF documents
 - `GET /documents`: List processed documents
 - `DELETE /documents/{id}`: Remove a document
 
