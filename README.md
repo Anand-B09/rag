@@ -1,6 +1,29 @@
-# Local PDF RAG System
+# PDF RAG System
 
-A robust Retrieval-Augmented Generation (RAG) system for querying PDF documents using local LLMs and vector storage. Built with FastAPI, Streamlit, ChromaDB, and LlamaIndex.
+A robust Retrieval-Augmented Generation (RAG) system for querying PDF documents using LLMs and vector storage. Built with FastAPI, Streamlit, ChromaDB, Ollama and LlamaIndex.
+
+```mermaid
+flowchart TD
+    subgraph Frontend Docker
+        F1[Streamlit]
+    end
+
+    subgraph Backend Docker
+        B1[LlamaIndex Backend with FastAPI]
+    end
+
+    subgraph VectorDB Docker
+        C1[ChromaDB]
+    end
+
+    subgraph LLM Serving Docker
+        O1[Ollama]
+    end
+
+    F1 -- "API Requests" --> B1
+    B1 <-- "Documents/Context" --> C1
+    B1 <-- "LLM Requests" --> O1
+```
 
 ## 🌟 Features
 
