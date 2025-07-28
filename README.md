@@ -1,6 +1,7 @@
 # PDF RAG System
 
 A robust Retrieval-Augmented Generation (RAG) system for querying PDF documents using LLMs and vector storage. Built with FastAPI, Streamlit, ChromaDB, Ollama and LlamaIndex.
+Refer to [Notes](Notes.md) for additional notes on this implementation.
 
 ```mermaid
 flowchart TD
@@ -62,23 +63,36 @@ flowchart TD
 
 1. Clone the repository:
 ```bash
-git clone [repository-url]
+git clone https://github.com/Anand-B09/rag
 cd rag
 ```
-
-2. Start the services:
+2. Update Makefile and build
+```bash
+vi Makefile
+# Update the DOCKER_COMPOSE variable based on your docker compose version
+make build
+```   
+   
+3. Start the services:
 ```bash
 make up
-# Or individually:
-make backend
-make frontend
 ```
 
-3. Access the UI:
+4. Monitor Logs
+```bash
+make logs
+```
+  
+5. Access the UI:
 - Frontend: http://localhost:8501
 - Backend API: http://localhost:8001
 - ChromaDB: http://localhost:8000
 
+6. Stop the services:
+```bash
+make down
+```
+   
 ## 📚 Project Structure
 
 ```
@@ -91,6 +105,7 @@ rag/
 │   └── Dockerfile
 ├── tests/             # Test suite
 └── docker-compose.yml
+└── Notes.md            # Implementation Notes
 ```
 
 ## 🧪 Testing
